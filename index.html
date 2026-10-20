@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Control Fecha Promesa</title>
+<meta name="description" content="Compara la fecha de promesa de cada unidad con la fecha de consulta. Funciona 100% en el navegador.">
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#f5f6f8; --card:#ffffff; --text:#1c2430; --muted:#5d6878; --line:#e1e5ea;
+  --accent:#1f4e78; --red:#e53935; --orange:#fb8c00; --yellow:#ffeb3b; --ok:#2e7d32;
+}
+@media (prefers-color-scheme: dark){
+  :root{--bg:#12161c;--card:#1b2129;--text:#e8ecf1;--muted:#9aa5b4;--line:#2c3540;--accent:#6aa5e0}
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}
+header{padding:20px 16px 8px;max-width:1200px;margin:0 auto}
+h1{margin:0 0 4px;font-size:22px}
+header p{margin:0;color:var(--muted);font-size:14px}
+main{max-width:1200px;margin:0 auto;padding:8px 16px 40px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:14px}
+#drop{border:2px dashed var(--line);border-radius:12px;padding:28px;text-align:center;cursor:pointer;transition:.15s}
+#drop.over{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+#drop strong{color:var(--accent)}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+label{font-size:14px;color:var(--muted)}
+input[type=date],input[type=search]{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text)}
+input[type=search]{flex:1;min-width:180px}
+button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
+button.ghost{background:transparent;color:var(--accent)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.stat{border:1px solid var(--line);border-radius:10px;padding:12px;cursor:pointer;background:var(--card);text-align:left;color:var(--text)}
+.stat .n{font-size:26px;font-weight:700}
+.stat .l{font-size:13px;color:var(--muted)}
+.stat.sel{outline:2px solid var(--accent)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{cursor:pointer;user-select:none;font-size:13px;color:var(--muted)}
+td.num{text-align:center;font-weight:700;border-radius:6px}
+.c-red{background:var(--red);color:#fff}
+.c-orange{background:var(--orange);color:#000}
+.c-yellow{background:var(--yellow);color:#000}
+.note{font-size:13px;color:var(--muted)}
+.hidden{display:none}
+footer{text-align:center;font-size:12px;color:var(--muted);padding:20px}
+footer a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Control Fecha Promesa</h1>
+  <p>Carga la BBDD en Excel y compara cada fecha de promesa con la fecha de consulta. Tus datos no salen de tu computador.</p>
+</header>
+<main>
+  <div class="card">
+    <div id="drop" tabindex="0">
+      <div><strong>Haz clic o arrastra aquí tu archivo</strong> (.xlsx, .xls o .csv)</div>
+      <div class="note" id="fileinfo">Se usan las columnas A (Refer.), E (Fecha promesa), H (Nombre), K (F. apertura), L (F. entrada) y M (F. cierre).</div>
+    </div>
+    <input type="file" id="file" accept=".xlsx,.xls,.csv" class="hidden">
+  </div>
+
+  <div id="results" class="hidden">
+    <div class="card row">
+      <label for="today">Fecha de consulta</label>
+      <input type="date" id="today">
+      <button class="ghost" id="resetToday">Hoy</button>
+      <input type="search" id="q" placeholder="Buscar por referencia o nombre…">
+      <button id="export">Descargar Excel</button>
+    </div>
+
+    <div class="card">
+      <div class="stats" id="stats"></div>
+      <p class="note" id="excluded"></p>
+    </div>
+
+    <div class="card tablewrap">
+      <table>
+        <thead><tr>
+          <th data-k="ref">Refer.</th>
+          <th data-k="prom">Fecha promesa</th>
+          <th data-k="nombre">Nombre</th>
+          <th data-k="aper">F. apertura</th>
+          <th data-k="entr">F. entrada</th>
+          <th data-k="dias">Días (consulta − promesa)</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <p class="note" id="shown"></p>
+    </div>
+  </div>
+</main>
+<footer>Código abierto (licencia MIT). Procesamiento 100% local en el navegador.</footer>
+
+<script>
+/* ---------- Lógica (sin dependencias del DOM) ---------- */
+const COL = {ref:0, prom:4, nombre:7, aper:10, entr:11, cierre:12}; // A,E,H,K,L,M
+const DAY = 86400000;
+
+// Convierte un valor de celda a "número de día" (días desde 1970-01-01, sin zona horaria)
+function toDay(v){
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "number" && isFinite(v)) return Math.floor(v) - 25569; // serial Excel
+  if (v instanceof Date && !isNaN(v)) return Math.floor(Date.UTC(v.getFullYear(), v.getMonth(), v.getDate()) / DAY);
+  const s = String(v).trim();
+  let m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);           // dd/mm/aa o dd/mm/aaaa
+  if (m){ let y = +m[3]; if (y < 100) y += 2000; return Math.floor(Date.UTC(y, +m[2]-1, +m[1]) / DAY); }
+  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);                             // aaaa-mm-dd
+  if (m) return Math.floor(Date.UTC(+m[1], +m[2]-1, +m[3]) / DAY);
+  return null;
+}
+function fmt(d){
+  if (d === null) return "";
+  const x = new Date(d * DAY);
+  return String(x.getUTCDate()).padStart(2,"0")+"/"+String(x.getUTCMonth()+1).padStart(2,"0")+"/"+x.getUTCFullYear();
+}
+function todayDay(){ const n = new Date(); return Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / DAY); }
+
+// rows: arreglo de filas (arreglos) incluyendo encabezado en la fila 0
+function procesar(rows){
+  const out = [], info = {entregadas:0, sinFecha:0, vacias:0};
+  for (let i = 1; i < rows.length; i++){
+    const r = rows[i] || [];
+    const ref = r[COL.ref], prom = toDay(r[COL.prom]);
+    if ((ref === undefined || ref === "" || ref === null) && prom === null){ info.vacias++; continue; }
+    if (toDay(r[COL.cierre]) !== null){ info.entregadas++; continue; }   // tiene F. cierre => entregada
+    if (prom === null){ info.sinFecha++; continue; }
+    out.push({ref: String(ref ?? ""), prom, nombre: String(r[COL.nombre] ?? ""),
+              aper: toDay(r[COL.aper]), entr: toDay(r[COL.entr])});
+  }
+  return {items: out, info};
+}
+function estado(dias){
+  if (dias >= 0) return "rojo";
+  if (dias === -1) return "naranja";
+  if (dias === -2) return "amarillo";
+  return "plazo";
+}
+if (typeof module !== "undefined") module.exports = {procesar, toDay, estado, fmt};
+
+/* ---------- Interfaz ---------- */
+if (typeof document !== "undefined") {
+  const $ = id => document.getElementById(id);
+  const ESTADOS = [
+    {k:"todos",    l:"Pendientes (total)",       c:null},
+    {k:"rojo",     l:"No cumplido (0 o más)",    c:"var(--red)"},
+    {k:"naranja",  l:"Vence mañana (−1)",        c:"var(--orange)"},
+    {k:"amarillo", l:"Vence en 2 días (−2)",     c:"var(--yellow)"},
+    {k:"plazo",    l:"A tiempo (−3 o menos)",    c:"var(--ok)"},
+  ];
+  let data = null, filtro = "todos", sortK = "dias", sortDir = -1;
+
+  const setToday = () => { $("today").value = new Date(todayDay()*DAY).toISOString().slice(0,10); };
+  const consulta = () => { const v = $("today").value; return v ? toDay(v) : todayDay(); };
+
+  function filas(){
+    const t = consulta(), q = $("q").value.trim().toLowerCase();
+    return data.items.map(x => ({...x, dias: t - x.prom}))
+      .map(x => ({...x, est: estado(x.dias)}))
+      .filter(x => !q || x.ref.toLowerCase().includes(q) || x.nombre.toLowerCase().includes(q));
+  }
+  function render(){
+    const all = filas();
+    const counts = {todos: all.length, rojo:0, naranja:0, amarillo:0, plazo:0};
+    all.forEach(x => counts[x.est]++);
+    $("stats").innerHTML = ESTADOS.map(e =>
+      `<button class="stat ${filtro===e.k?"sel":""}" data-f="${e.k}">
+         <div class="n">${counts[e.k]}</div>
+         <div class="l">${e.c?`<span class="dot" style="background:${e.c}"></span>`:""}${e.l}</div></button>`).join("");
+    const i = data.info;
+    $("excluded").textContent = `Excluidas: ${i.entregadas} unidades entregadas (con F. cierre)` +
+      (i.sinFecha ? ` y ${i.sinFecha} sin fecha de promesa.` : ".");
+    let rows = filtro === "todos" ? all : all.filter(x => x.est === filtro);
+    rows.sort((a,b) => { const A=a[sortK], B=b[sortK];
+      return (A===B?0:(A===null?1:B===null?-1:(A>B?1:-1))) * sortDir; });
+    const cls = {rojo:"c-red", naranja:"c-orange", amarillo:"c-yellow", plazo:""};
+    const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+    $("tbody").innerHTML = rows.map(x => `<tr><td>${esc(x.ref)}</td><td>${fmt(x.prom)}</td><td>${esc(x.nombre)}</td>
+      <td>${fmt(x.aper)}</td><td>${fmt(x.entr)}</td><td class="num ${cls[x.est]}">${x.dias}</td></tr>`).join("");
+    $("shown").textContent = `Mostrando ${rows.length} de ${all.length} pendientes.`;
+    render.last = rows;
+  }
+
+  function cargar(file){
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const wb = XLSX.read(e.target.result, {type:"array", cellDates:false});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:""});
+        data = procesar(rows);
+        $("fileinfo").textContent = `Archivo cargado: ${file.name} (hoja "${wb.SheetNames[0]}")`;
+        $("results").classList.remove("hidden");
+        render();
+      } catch(err){ alert("No se pudo leer el archivo: " + err.message); }
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  const drop = $("drop"), inp = $("file");
+  drop.onclick = () => inp.click();
+  drop.onkeydown = e => { if (e.key==="Enter"||e.key===" ") inp.click(); };
+  inp.onchange = () => inp.files[0] && cargar(inp.files[0]);
+  ["dragenter","dragover"].forEach(t => drop.addEventListener(t, e => {e.preventDefault(); drop.classList.add("over");}));
+  ["dragleave","drop"].forEach(t => drop.addEventListener(t, e => {e.preventDefault(); drop.classList.remove("over");}));
+  drop.addEventListener("drop", e => e.dataTransfer.files[0] && cargar(e.dataTransfer.files[0]));
+
+  $("stats").onclick = e => { const b = e.target.closest(".stat"); if (b){ filtro = b.dataset.f; render(); } };
+  document.querySelector("thead").onclick = e => { const k = e.target.dataset.k; if (!k) return;
+    sortDir = (sortK === k) ? -sortDir : 1; sortK = k; render(); };
+  $("q").oninput = render; $("today").onchange = render;
+  $("resetToday").onclick = () => { setToday(); render(); };
+
+  $("export").onclick = () => {
+    const rows = render.last || [];
+    const aoa = [["Refer.","Fecha promesa","Nombre","F. apertura","F. entrada","Fecha consulta","Días (consulta − promesa)","Estado"]];
+    const nom = {rojo:"No cumplido", naranja:"Vence mañana", amarillo:"Vence en 2 días", plazo:"A tiempo"};
+    const t = fmt(consulta());
+    rows.forEach(x => aoa.push([x.ref, fmt(x.prom), x.nombre, fmt(x.aper), fmt(x.entr), t, x.dias, nom[x.est]]));
+    const ws = XLSX.utils.aoa_to_sheet(aoa); ws["!cols"] = [12,14,34,12,12,14,12,16].map(w => ({wch:w}));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Pendientes");
+    XLSX.writeFile(wb, `fecha_promesa_${$("today").value || "hoy"}.xlsx`);
+  };
+  setToday();
+}
+</script>
+</body>
+</html>
